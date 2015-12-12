@@ -1,21 +1,35 @@
 /*
- * \brief  Simple Aterm parser
- * \author Emery Hemingway
- * \date   2015-03-13
+ * Copyright (C) 2015 Emery Hemingway
+ *
+ * Released under the under the terms of the
+ * GNU General Public License version 3.
  */
+
 
 #ifndef _ATERM_PARSER_H_
 #define _ATERM_PARSER_H_
 
-#include <exception.h>
-
+#include <util/string.h>
+#include <base/exception.h>
+#include <base/stdint.h>
 
 namespace Aterm {
+
+	using namespace Genode;
+
 	class Parser;
 }
 
 class Aterm::Parser
 {
+	public:
+
+		struct Exception : Genode::Exception { };
+		struct Malformed_element : Exception { };
+		struct Wrong_element     : Exception { };
+		struct End_of_term       : Exception { };
+		struct Bad_logic         : Exception { };
+		struct Overflow          : Exception { };
 
 	private:
 
@@ -48,56 +62,14 @@ class Aterm::Parser
 
 		void check_end()
 		{
-			if (_len == 0 && _depth == 1) return;
-			if ( *_pos == ',')            return advance();
-			if (*_pos == _state[0])       return pop();
+			if (*_pos == ',')        return advance();
+			if (_depth == 1)         return;
+			if (*_pos == _state[0])  return pop();
 
 			throw Malformed_element();
 		}
 
 	public:
-
-		struct Exception         : std::exception;
-		struct Malformed_element : Exception { };
-		struct Wrong_element     : Exception { };
-		struct End_of_term       : Exception { };
-		struct Bad_logic         : Exception { };
-		struct Overflow          : Exception { };
-		struct Runoff            : Exception { };
-
-		class String
-		{
-			private:
-
-				char const *_start;
-				int         _len;
-
-			public:
-
-				String() : _start(0), _len(0) { }
-				String(char const *start, int len) : _start(start)
-				{
-					_len = len;
-				}
-
-				/**
-				 * Return string term as null-terminated string
-				 */
-				void string(char *dst, int max_len) const
-				{
-					strncpy(dst, _start, min(_len+1, max_len));
-				}
-
-				/**
-				 * Return pointer to first character.
-				 */
-				char const *start() { return _start; };
-
-				/**
-				 * Return string length.
-				 */
-				int len() { return _len; };
-		};
 
 		/**
 		 * Constructor
@@ -105,49 +77,86 @@ class Aterm::Parser
 		Parser(char const *start, size_t len)
 		: _pos(start), _len(len), _depth(1) { _state[0] = NULL; };
 
+		/*
+		 * The following functions apply a function to a term and
+		 * return the base address of the term. The return value is
+		 * for the sake of deferred processing.
+		 */
+
 		template <typename FUNC>
-		void constructor(char const *name, FUNC const &func)
+		char const *constructor(char const *name, FUNC const &func)
 		{
-			size_t len = strlen(name);
-			if (len > _len || strcmp(_pos, name, len))
+			size_t len = Genode::strlen(name);
+			if (len > _len || Genode::strcmp(_pos, name, len))
 				throw Wrong_element();
+			char const *base = _pos;
 
 			_pos += len;
 			_len -= len;
 
 			tuple(func);
+			return base;
 		}
 
 		template<typename FUNC>
-		void tuple(FUNC const &func)
+		char const *tuple(FUNC const &func)
 		{
 			if (!_pos || !_len) throw End_of_term();
 			if (*_pos != '(') throw Wrong_element();
+			char const *base = _pos;
 
 			advance();
 			push(TUPLE);
-			func();
+			func(*this);
 			check_end();
+			return base;
 		}
 
 		template<typename FUNC>
-		void list(FUNC const &func)
+		char const *list(FUNC const &func)
 		{
 			if (!_pos || !_len) throw End_of_term();
 			if (*_pos != '[') throw Wrong_element();
+			char const *base = _pos;
 
 			advance();
-			int d = _depth;
+			if (*_pos == ']') {
+				advance();
+				check_end();
+				return base;
+			}
+
+			int start_depth = _depth;
 			push(LIST);
-			while (d < _depth) func();
+			while (_depth > start_depth)
+				func(*this);
 			check_end();
+			return base;
 		}
 
-		String string()
+		void string()
 		{
 			if (*_pos != '"') throw Wrong_element();
 
-			int len = 0;
+			++_pos;
+			++_len;
+
+			while (_len  && (*_pos == '\\' || *_pos != '"')) {
+				++_pos;
+				++_len;
+			}
+			++_pos;
+			++_len;
+
+			check_end();
+		}
+
+		template <size_t N>
+		void string(Genode::String<N> *out)
+		{
+			if (*_pos != '"') throw Wrong_element();
+
+			size_t len = 0;
 			char const *pos = _pos + 1;
 
 			while (pos[len] == '\\' || pos[len] != '"') {
@@ -158,7 +167,7 @@ class Aterm::Parser
 			_pos += 2 + len;
 
 			check_end();
-			return String(pos, len);
+			*out = Genode::String<N>(pos, len);
 		}
 
 		long integer()
